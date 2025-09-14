@@ -2,30 +2,59 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { useSession } from '@supabase/auth-helpers-react'
+import { Session } from '@supabase/supabase-js'
 import { supabase } from '../../lib/supabase'
 
 export default function Onboarding() {
   const [language, setLanguage] = useState('en')
   const [fontSize, setFontSize] = useState('medium')
   const [contrastMode, setContrastMode] = useState(false)
-  const [loading, setLoading] = useState(false)
+  const [submitLoading, setSubmitLoading] = useState(false)
   const [error, setError] = useState('')
   const router = useRouter()
-  const session = useSession()
+  const [session, setSession] = useState<Session | null>(null)
+  const [sessionLoading, setSessionLoading] = useState(true)
 
   useEffect(() => {
-    if (!session) {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session)
+      setSessionLoading(false)
+    })
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session)
+      setSessionLoading(false)
+    })
+
+    return () => subscription.unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    if (!sessionLoading && !session) {
       router.push('/auth/login')
     }
-  }, [session, router])
+  }, [session, sessionLoading, router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!session?.user?.id) return
 
-    setLoading(true)
+    setSubmitLoading(true)
     setError('')
+
+    // Check if preferences already exist
+    const { data: existingPrefs } = await supabase
+      .from('preferences')
+      .select('*')
+      .eq('user_id', session.user.id)
+      .single()
+
+    if (existingPrefs) {
+      // Preferences already exist, go to dashboard
+      router.push('/dashboard')
+      setSubmitLoading(false)
+      return
+    }
 
     const { error } = await supabase
       .from('preferences')
@@ -39,10 +68,31 @@ export default function Onboarding() {
     if (error) {
       setError(error.message)
     } else {
-      router.push('/dashboard')
+      // After successful insert, poll for preferences to ensure they are available
+      let attempts = 0
+      const maxAttempts = 5
+      const delay = 1000 // 1 second
+
+      const pollForPreferences = async () => {
+        const { data: newPrefs } = await supabase
+          .from('preferences')
+          .select('*')
+          .eq('user_id', session.user.id)
+          .single()
+
+        if (newPrefs) {
+          router.push('/dashboard')
+        } else if (attempts < maxAttempts) {
+          attempts++
+          setTimeout(pollForPreferences, delay)
+        } else {
+          setError('Failed to retrieve preferences after saving. Please try again.')
+        }
+      }
+      pollForPreferences()
     }
 
-    setLoading(false)
+    setSubmitLoading(false)
   }
 
   if (!session) {
@@ -122,10 +172,10 @@ export default function Onboarding() {
           <div>
             <button
               type="submit"
-              disabled={loading}
+              disabled={submitLoading}
               className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
             >
-              {loading ? 'Saving...' : 'Continue to Dashboard'}
+              {submitLoading ? 'Saving...' : 'Continue to Dashboard'}
             </button>
           </div>
         </form>
